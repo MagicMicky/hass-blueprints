@@ -33,14 +33,20 @@ blueprint:
       selector: { number: { min: 0, max: 60, unit_of_measurement: s, mode: slider } }
 
 mode: restart
-triggers:
+
+variables:
+  i_dim_scene: !input dim_scene
+  i_dim_min: !input dim_after_min
+  i_off_total: !input off_after_total_min
+
+trigger:
   - platform: state
     entity_id: !input light_entity
     to: "on"
 
-conditions: []
+condition: []
 
-actions:
+action:
   # Window 1: up to dim_after_min to detect presence or doorway motion
   - wait_for_trigger:
       - platform: state
@@ -103,8 +109,3 @@ actions:
         sequence:
           - service: light.turn_off
             target: { entity_id: !input light_entity }
-
-variables:
-  i_dim_scene: !input dim_scene
-  i_dim_min: !input dim_after_min
-  i_off_total: !input off_after_total_min
