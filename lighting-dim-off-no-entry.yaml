@@ -3,34 +3,60 @@ blueprint:
   description: >
     After the light turns ON, wait for presence or doorway motion.
     If nobody shows up within Dim window, dim. If still nobody by Off window, turn off.
+    Doorway sensor is optional; you may set it to the same entity as presence if desired.
   domain: automation
   input:
     light_entity:
       name: Light (or group)
-      selector: { entity: { domain: light } }
+      selector:
+        entity:
+          domain: light
     presence_sensor:
       name: Presence / Motion inside room (binary_sensor)
-      selector: { entity: { domain: binary_sensor } }
+      selector:
+        entity:
+          domain: binary_sensor
     doorway_sensor:
       name: (Optional) Doorway/Hall PIR (binary_sensor)
       default: ""
-      selector: { entity: { domain: binary_sensor, multiple: false } }
+      selector:
+        entity:
+          domain: binary_sensor
+          multiple: false
     dim_after_min:
       name: Dim if nobody enters within (minutes)
       default: 2
-      selector: { number: { min: 1, max: 60, unit_of_measurement: min, mode: slider } }
+      selector:
+        number:
+          min: 1
+          max: 60
+          unit_of_measurement: min
+          mode: slider
     off_after_total_min:
       name: Turn off if nobody enters within (total minutes since ON)
       default: 6
-      selector: { number: { min: 2, max: 120, unit_of_measurement: min, mode: slider } }
+      selector:
+        number:
+          min: 2
+          max: 120
+          unit_of_measurement: min
+          mode: slider
     dim_scene:
-      name: Scene to activate for "dim"
+      name: Scene to activate for "dim" (optional; uses brightness 20% if blank)
       default: ""
-      selector: { entity: { domain: scene, multiple: false } }
+      selector:
+        entity:
+          domain: scene
+          multiple: false
     dim_transition_sec:
       name: Dim transition (seconds)
       default: 5
-      selector: { number: { min: 0, max: 60, unit_of_measurement: s, mode: slider } }
+      selector:
+        number:
+          min: 0
+          max: 60
+          unit_of_measurement: s
+          mode: slider
 
 mode: restart
 
@@ -38,6 +64,7 @@ variables:
   i_dim_scene: !input dim_scene
   i_dim_min: !input dim_after_min
   i_off_total: !input off_after_total_min
+  i_doorway: !input doorway_sensor
 
 trigger:
   - platform: state
@@ -47,17 +74,51 @@ trigger:
 condition: []
 
 action:
-  # Window 1: up to dim_after_min to detect presence or doorway motion
-  - wait_for_trigger:
-      - platform: state
-        entity_id: !input presence_sensor
-        to: "on"
-      - platform: state
-        entity_id: !input doorway_sensor
-        to: "on"
-    timeout:
-      minutes: !input dim_after_min
-    continue_on_timeout: true
+  # If already occupied when the light turns on, skip the no-entry waits entirely.
+  - choose:
+      - conditions:
+          - condition: or
+            conditions:
+              - condition: state
+                entity_id: !input presence_sensor
+                state: "on"
+              - condition: and
+                conditions:
+                  - condition: template
+                    value_template: "{{ i_doorway is defined and i_doorway != '' }}"
+                  - condition: state
+                    entity_id: !input doorway_sensor
+                    state: "on"
+        sequence:
+          - stop: "Already occupied; skipping no-entry timeouts"
+
+  # Window 1: up to dim_after_min to detect presence (and doorway if provided)
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ i_doorway != '' }}"
+        sequence:
+          - wait_for_trigger:
+              - platform: state
+                entity_id: !input presence_sensor
+                to: "on"
+              - platform: state
+                entity_id: !input doorway_sensor
+                to: "on"
+            timeout:
+              minutes: !input dim_after_min
+            continue_on_timeout: true
+      - conditions:
+          - condition: template
+            value_template: "{{ i_doorway == '' }}"
+        sequence:
+          - wait_for_trigger:
+              - platform: state
+                entity_id: !input presence_sensor
+                to: "on"
+            timeout:
+              minutes: !input dim_after_min
+            continue_on_timeout: true
 
   # If timed out (nobody entered) and light still on -> dim
   - choose:
@@ -74,12 +135,14 @@ action:
                     value_template: "{{ i_dim_scene != '' }}"
                 sequence:
                   - service: hue.activate_scene
-                    target: { entity_id: !input dim_scene }
+                    target:
+                      entity_id: !input dim_scene
                     data:
                       transition: !input dim_transition_sec
             default:
               - service: light.turn_on
-                target: { entity_id: !input light_entity }
+                target:
+                  entity_id: !input light_entity
                 data:
                   brightness_pct: 20
                   transition: !input dim_transition_sec
@@ -88,16 +151,33 @@ action:
   - variables:
       remaining_min: >
         {{ [ ( i_off_total | int ) - ( i_dim_min | int ), 0 ] | max }}
-  - wait_for_trigger:
-      - platform: state
-        entity_id: !input presence_sensor
-        to: "on"
-      - platform: state
-        entity_id: !input doorway_sensor
-        to: "on"
-    timeout:
-      minutes: "{{ remaining_min }}"
-    continue_on_timeout: true
+
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ i_doorway != '' }}"
+        sequence:
+          - wait_for_trigger:
+              - platform: state
+                entity_id: !input presence_sensor
+                to: "on"
+              - platform: state
+                entity_id: !input doorway_sensor
+                to: "on"
+            timeout:
+              minutes: "{{ remaining_min }}"
+            continue_on_timeout: true
+      - conditions:
+          - condition: template
+            value_template: "{{ i_doorway == '' }}"
+        sequence:
+          - wait_for_trigger:
+              - platform: state
+                entity_id: !input presence_sensor
+                to: "on"
+            timeout:
+              minutes: "{{ remaining_min }}"
+            continue_on_timeout: true
 
   - choose:
       - conditions:
@@ -108,4 +188,5 @@ action:
             state: "on"
         sequence:
           - service: light.turn_off
-            target: { entity_id: !input light_entity }
+            target:
+              entity_id: !input light_entity
