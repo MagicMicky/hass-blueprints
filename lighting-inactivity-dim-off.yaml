@@ -2,7 +2,8 @@ blueprint:
   name: Lighting – Inactivity Dim/Off
   description: >
     Dim after a short inactivity window, then turn off after a longer one.
-    Uses presence sensor only. Optional dim scene + transition. Optional override boolean to clear.
+    Uses presence sensor only. Optional dim scene + transition. Optional override
+    boolean to clear.
   domain: automation
   input:
     light_entity:
@@ -33,37 +34,42 @@ blueprint:
       selector: { entity: { domain: input_boolean, multiple: false } }
 
 mode: restart
-triggers:
-  - id: dim
+
+variables:
+  i_dim_scene: !input dim_scene
+  i_override: !input override_boolean
+
+trigger:
+  - id: "dim"
     platform: state
     entity_id: !input presence_sensor
     to: "off"
     for:
       minutes: !input dim_after_min
-  - id: off
+  - id: "off"
     platform: state
     entity_id: !input presence_sensor
     to: "off"
     for:
       minutes: !input off_after_min
 
-conditions:
+condition:
   - condition: state
     entity_id: !input light_entity
     state: "on"
 
-actions:
+action:
   - choose:
       - conditions:
           - condition: trigger
-            id: off
+            id: "off"
         sequence:
           - service: light.turn_off
             target: { entity_id: !input light_entity }
 
       - conditions:
           - condition: trigger
-            id: dim
+            id: "dim"
         sequence:
           - choose:
               - conditions:
@@ -87,7 +93,3 @@ actions:
     then:
       - service: input_boolean.turn_off
         target: { entity_id: !input override_boolean }
-
-variables:
-  i_dim_scene: !input dim_scene
-  i_override: !input override_boolean
