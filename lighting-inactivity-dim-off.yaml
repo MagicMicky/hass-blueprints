@@ -1,0 +1,93 @@
+blueprint:
+  name: Lighting – Inactivity Dim/Off
+  description: >
+    Dim after a short inactivity window, then turn off after a longer one.
+    Uses presence sensor only. Optional dim scene + transition. Optional override boolean to clear.
+  domain: automation
+  input:
+    light_entity:
+      name: Light (or group)
+      selector: { entity: { domain: light } }
+    presence_sensor:
+      name: Presence / Motion (binary_sensor)
+      selector: { entity: { domain: binary_sensor } }
+    dim_after_min:
+      name: Dim after (minutes)
+      default: 10
+      selector: { number: { min: 1, max: 240, unit_of_measurement: min, mode: slider } }
+    off_after_min:
+      name: Turn off after (minutes)
+      default: 60
+      selector: { number: { min: 2, max: 480, unit_of_measurement: min, mode: slider } }
+    dim_scene:
+      name: Scene to activate for "dim"
+      default: ""
+      selector: { entity: { domain: scene, multiple: false } }
+    dim_transition_sec:
+      name: Dim transition (seconds)
+      default: 10
+      selector: { number: { min: 0, max: 60, unit_of_measurement: s, mode: slider } }
+    override_boolean:
+      name: (Optional) Manual override boolean to turn OFF after action
+      default: ""
+      selector: { entity: { domain: input_boolean, multiple: false } }
+
+mode: restart
+triggers:
+  - id: dim
+    platform: state
+    entity_id: !input presence_sensor
+    to: "off"
+    for:
+      minutes: !input dim_after_min
+  - id: off
+    platform: state
+    entity_id: !input presence_sensor
+    to: "off"
+    for:
+      minutes: !input off_after_min
+
+conditions:
+  - condition: state
+    entity_id: !input light_entity
+    state: "on"
+
+actions:
+  - choose:
+      - conditions:
+          - condition: trigger
+            id: off
+        sequence:
+          - service: light.turn_off
+            target: { entity_id: !input light_entity }
+
+      - conditions:
+          - condition: trigger
+            id: dim
+        sequence:
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ i_dim_scene != '' }}"
+                sequence:
+                  - service: hue.activate_scene
+                    target: { entity_id: !input dim_scene }
+                    data:
+                      transition: !input dim_transition_sec
+            default:
+              - service: light.turn_on
+                target: { entity_id: !input light_entity }
+                data:
+                  brightness_pct: 20
+                  transition: !input dim_transition_sec
+
+  - if:
+      - condition: template
+        value_template: "{{ i_override != '' }}"
+    then:
+      - service: input_boolean.turn_off
+        target: { entity_id: !input override_boolean }
+
+variables:
+  i_dim_scene: !input dim_scene
+  i_override: !input override_boolean
