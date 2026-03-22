@@ -1,9 +1,11 @@
 blueprint:
-  name: Lighting – No-Entry Guard (Dim then Off)
+  name: "Lighting – No-Entry Guard (Dim then Off)"
   description: >
-    After the light turns ON, wait for presence or doorway motion.
-    If nobody shows up within Dim window, dim. If still nobody by Off window, turn off.
-    Doorway sensor is optional; you may set it to the same entity as presence if desired.
+    After the light turns ON, wait for presence or doorway motion. If nobody
+    shows up within Dim window, dim. If still nobody by Off window, turn off.
+    Doorway sensor is optional; you may set it to the same entity as presence
+    if desired.
+  source_url: https://github.com/MagicMicky/hass-blueprints/blob/main/lighting-dim-off-no-entry.yaml
   domain: automation
   input:
     light_entity:
@@ -22,7 +24,6 @@ blueprint:
       selector:
         entity:
           domain: binary_sensor
-          multiple: false
     dim_after_min:
       name: Dim if nobody enters within (minutes)
       default: 2
@@ -32,6 +33,7 @@ blueprint:
           max: 60
           unit_of_measurement: min
           mode: slider
+          step: 1
     off_after_total_min:
       name: Turn off if nobody enters within (total minutes since ON)
       default: 6
@@ -41,13 +43,13 @@ blueprint:
           max: 120
           unit_of_measurement: min
           mode: slider
+          step: 1
     dim_scene:
       name: Scene to activate for "dim" (optional; uses brightness 20% if blank)
       default: ""
       selector:
         entity:
           domain: scene
-          multiple: false
     dim_transition_sec:
       name: Dim transition (seconds)
       default: 5
@@ -57,24 +59,17 @@ blueprint:
           max: 60
           unit_of_measurement: s
           mode: slider
+          step: 1
 
 mode: restart
-
-variables:
-  i_dim_scene: !input dim_scene
-  i_dim_min: !input dim_after_min
-  i_off_total: !input off_after_total_min
-  i_doorway: !input doorway_sensor
 
 trigger:
   - platform: state
     entity_id: !input light_entity
     to: "on"
 
-condition: []
-
 action:
-  # If already occupied when the light turns on, skip the no-entry waits entirely.
+  # Phase 0 — sensor already ON when light turns on → stop immediately
   - choose:
       - conditions:
           - condition: or
@@ -82,107 +77,92 @@ action:
               - condition: state
                 entity_id: !input presence_sensor
                 state: "on"
-              - condition: and
-                conditions:
-                  - condition: template
-                    value_template: "{{ i_doorway is defined and i_doorway != '' }}"
-                  - condition: state
-                    entity_id: !input doorway_sensor
-                    state: "on"
+              - condition: state
+                entity_id: !input doorway_sensor
+                state: "on"
         sequence:
           - stop: "Already occupied; skipping no-entry timeouts"
 
-  # Window 1: up to dim_after_min to detect presence (and doorway if provided)
+  # Phase 1 — wait up to dim_after_min for sensor to fire
+  - wait_for_trigger:
+      - id: "1"
+        platform: state
+        entity_id: !input presence_sensor
+        to: "on"
+      - id: "2"
+        platform: state
+        entity_id: !input doorway_sensor
+        to: "on"
+    timeout:
+      minutes: !input dim_after_min
+    continue_on_timeout: true
+
+  # Phase 1b — FIX: sensor is ON right now (arrived during phase 1) → stop
   - choose:
       - conditions:
-          - condition: template
-            value_template: "{{ i_doorway != '' }}"
-        sequence:
-          - wait_for_trigger:
-              - platform: state
+          - condition: or
+            conditions:
+              - condition: state
                 entity_id: !input presence_sensor
-                to: "on"
-              - platform: state
+                state: "on"
+              - condition: state
                 entity_id: !input doorway_sensor
-                to: "on"
-            timeout:
-              minutes: !input dim_after_min
-            continue_on_timeout: true
-      - conditions:
-          - condition: template
-            value_template: "{{ i_doorway == '' }}"
+                state: "on"
         sequence:
-          - wait_for_trigger:
-              - platform: state
-                entity_id: !input presence_sensor
-                to: "on"
-            timeout:
-              minutes: !input dim_after_min
-            continue_on_timeout: true
+          - stop: "Presence confirmed after dim wait; keeping lights on"
 
-  # If timed out (nobody entered) and light still on -> dim
+  # Dim — nobody confirmed present yet, apply dim scene or 20%
   - choose:
       - conditions:
           - condition: template
-            value_template: "{{ not wait.completed }}"
-          - condition: state
-            entity_id: !input light_entity
-            state: "on"
+            value_template: "{{ dim_scene != '' }}"
         sequence:
-          - choose:
-              - conditions:
-                  - condition: template
-                    value_template: "{{ i_dim_scene != '' }}"
-                sequence:
-                  - service: hue.activate_scene
-                    target:
-                      entity_id: !input dim_scene
-                    data:
-                      transition: !input dim_transition_sec
-            default:
-              - service: light.turn_on
-                target:
-                  entity_id: !input light_entity
-                data:
-                  brightness_pct: 20
-                  transition: !input dim_transition_sec
+          - service: hue.activate_scene
+            data:
+              transition: !input dim_transition_sec
+            target:
+              entity_id: !input dim_scene
+    default:
+      - service: light.turn_on
+        target:
+          entity_id: !input light_entity
+        data:
+          brightness_pct: 20
+          transition: !input dim_transition_sec
 
-  # Window 2: until total off_after_total_min — if still nobody, turn OFF
+  # Phase 2 — wait remaining (off_after_total - dim_after) minutes
   - variables:
-      remaining_min: >
-        {{ [ ( i_off_total | int ) - ( i_dim_min | int ), 0 ] | max }}
+      remaining_min: "{{ off_after_total_min - dim_after_min }}"
+  - wait_for_trigger:
+      - id: "3"
+        platform: state
+        entity_id: !input presence_sensor
+        to: "on"
+      - id: "4"
+        platform: state
+        entity_id: !input doorway_sensor
+        to: "on"
+    timeout:
+      minutes: "{{ remaining_min }}"
+    continue_on_timeout: true
 
+  # Phase 2b — FIX: same presence check after second wait
   - choose:
       - conditions:
-          - condition: template
-            value_template: "{{ i_doorway != '' }}"
-        sequence:
-          - wait_for_trigger:
-              - platform: state
+          - condition: or
+            conditions:
+              - condition: state
                 entity_id: !input presence_sensor
-                to: "on"
-              - platform: state
+                state: "on"
+              - condition: state
                 entity_id: !input doorway_sensor
-                to: "on"
-            timeout:
-              minutes: "{{ remaining_min }}"
-            continue_on_timeout: true
-      - conditions:
-          - condition: template
-            value_template: "{{ i_doorway == '' }}"
+                state: "on"
         sequence:
-          - wait_for_trigger:
-              - platform: state
-                entity_id: !input presence_sensor
-                to: "on"
-            timeout:
-              minutes: "{{ remaining_min }}"
-            continue_on_timeout: true
+          - stop: "Presence confirmed after off wait; keeping lights on"
 
+  # Turn off — only reaches here if nobody was detected throughout
   - choose:
       - conditions:
-          - condition: template
-            value_template: "{{ not wait.completed }}"
           - condition: state
             entity_id: !input light_entity
             state: "on"
